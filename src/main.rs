@@ -4,6 +4,7 @@ use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, Private
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use num::BigUint;
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
 
@@ -80,13 +81,15 @@ fn split_the_db() {
     let file = File::open("database.txt").unwrap();
     let reader = io::BufReader::new(file);
     let local_lines = reader.lines().filter(|line| line.as_ref().unwrap().len() < 35).collect::<Vec<_>>();
+    let local_lines = local_lines.par_iter().map(|line| BigUint::from_bytes_be(&base58::decode(line.as_ref().unwrap()).unwrap().as_slice())).collect::<Vec<_>>();
 
     for i in 0..100 {
-        let u = local_lines[(i * (local_lines.len() / 100))..((i + 1) * (local_lines.len() / 100))].iter().peekable().peek().unwrap().as_ref().unwrap();
-        let mut new_file = File::create(format!("database/{}.txt", u)).unwrap();
+        let u = &local_lines[(i * (local_lines.len() / 100))..((i + 1) * (local_lines.len() / 100))];
+        let j = &u[0].to_str_radix(10);
+        let mut new_file = File::create(format!("database/{}.txt", j)).unwrap();
 
-        for line in local_lines[(i * (local_lines.len() / 100))..((i + 1) * (local_lines.len() / 100))].iter() {
-            let line = line.as_ref().unwrap();
+        for line in u.iter() {
+            let line = line.to_str_radix(10);
             new_file.write_all(format!("{}\n", line.to_owned()).as_bytes()).unwrap();
         }
     }
