@@ -1,4 +1,4 @@
-use std::{fs::{File, self}, io::{Write, self, BufRead}, time};
+use std::{fs::{File, self}, io::{Write, self, BufRead}, time, error::Error};
 
 use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey, base58};
 use flate2::read::GzDecoder;
@@ -7,18 +7,19 @@ use num::BigUint;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
+use scylla::*;
 
 
 #[tokio::main]
 async fn main() {
+    download_database().await;
+
     let wallet = Wallet::new();
 
     let file_list : Vec<String> = fs::read_dir("database").unwrap().map(|res| res.unwrap().file_name().to_str().unwrap().to_string()).collect();
     //delete .txt from all Strings in file_list
     let file_names = file_list.iter().map(|s| s.replace(".txt", "")).collect::<Vec<_>>();
     let file_nums = file_names.iter().map(|s| BigUint::from_bytes_be(&base58::decode(s.as_str()).unwrap().as_slice())).collect::<Vec<_>>();
-
-    //download_database().await;
 
     //split_the_db();
 
@@ -81,16 +82,13 @@ fn split_the_db() {
     let file = File::open("database.txt").unwrap();
     let reader = io::BufReader::new(file);
     let local_lines = reader.lines().filter(|line| line.as_ref().unwrap().len() < 35).collect::<Vec<_>>();
-    let local_lines = local_lines.par_iter().map(|line| BigUint::from_bytes_be(&base58::decode(line.as_ref().unwrap()).unwrap().as_slice())).collect::<Vec<_>>();
 
     for i in 0..100 {
         let u = &local_lines[(i * (local_lines.len() / 100))..((i + 1) * (local_lines.len() / 100))];
-        let j = &u[0].to_str_radix(10);
-        let mut new_file = File::create(format!("database/{}.txt", j)).unwrap();
+        let mut new_file = File::create(format!("database/{}.txt", u[0].as_deref().unwrap())).unwrap();
 
         for line in u.iter() {
-            let line = line.to_str_radix(10);
-            new_file.write_all(format!("{}\n", line.to_owned()).as_bytes()).unwrap();
+            new_file.write_all(format!("{}\n", line.as_ref().unwrap()).as_bytes()).unwrap();
         }
     }
 }
@@ -141,4 +139,49 @@ impl ToString for Wallet {
         //convert to json
         format!("{{\n\t\"private_key\": \"{}\",\n\t\"public_key\": \"{}\",\n\t\"address\": \"{}\"\n}}", self.private_key, self.public_key, self.address)
     }
+}
+
+async fn test() -> Result<(), Box<dyn Error>> {
+    // Create a new Session which connects to node at 127.0.0.1:9042
+    // (or SCYLLA_URI if specified)
+    let uri = std::env::var("SCYLLA_URI")
+        .unwrap_or_else(|_| "127.0.0.1:9042".to_string());
+
+    let session: Session = SessionBuilder::new()
+        .known_node(uri)
+        .build()
+        .await?;
+
+    // Create an example keyspace and table
+    session
+        .query(
+            "CREATE KEYSPACE IF NOT EXISTS ks WITH REPLICATION = \
+            {'class' : 'SimpleStrategy', 'replication_factor' : 1}",
+            &[],
+        )
+        .await?;
+
+    session
+        .query(
+            "CREATE TABLE IF NOT EXISTS ks.extab (a int primary key)",
+            &[],
+        )
+        .await?;
+
+    // Insert a value into the table
+    let to_insert: i32 = 12345;
+    session
+        .query("INSERT INTO ks.extab (a) VALUES(?)", (to_insert,))
+        .await?;
+
+    // Query rows from the table and print them
+    if let Some(rows) = session.query("SELECT a FROM ks.extab", &[]).await?.rows {
+        // Parse each row as a tuple containing single i32
+        for row in rows.into_typed::<(i32,)>() {
+            let read_row: (i32,) = row?;
+            println!("Read a value from row: {}", read_row.0);
+        }
+    }
+
+    Ok(())
 }
