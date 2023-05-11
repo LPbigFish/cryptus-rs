@@ -235,6 +235,7 @@ dependencies = [
  "serde",
  "tar",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

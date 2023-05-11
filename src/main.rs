@@ -1,13 +1,12 @@
-use std::{fs::{File, self}, io::{Write, self, BufRead}, time, error::Error};
+use std::{fs::{File, self}, io::{Write, self, BufRead}, time};
 
-use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey, base58};
+use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
-use num::BigUint;
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
 use scylla::*;
+use uuid::Uuid;
 
 //https://www.scylladb.com/
 
@@ -18,16 +17,18 @@ async fn main() {
 
     let wallet = Wallet::new();
 
-    let file_list : Vec<String> = fs::read_dir("database").unwrap().map(|res| res.unwrap().file_name().to_str().unwrap().to_string()).collect();
-    //delete .txt from all Strings in file_list
-    let file_names = file_list.iter().map(|s| s.replace(".txt", "")).collect::<Vec<_>>();
-    let file_nums = file_names.iter().map(|s| BigUint::from_bytes_be(&base58::decode(s.as_str()).unwrap().as_slice())).collect::<Vec<_>>();
-
-    //split_the_db();
-
     println!("{}", wallet.to_string());
 
-    println!("{}", search_in_db(wallet.address, file_list, file_nums));
+    let uri = std::env::var("SCYLLA_URI")
+        .unwrap_or_else(|_| "127.0.0.1:9042".to_string());
+
+    let session: Session = SessionBuilder::new()
+        .known_node(uri)
+        .build()
+        .await
+        .expect("Failed to establish connection to the Database");
+
+    println!("{}", search_in_db(wallet.address, &session).await);
 }
 
 async fn download_database() {
@@ -71,47 +72,68 @@ async fn download_database() {
     fs::remove_file("database.txt.gz").expect("Failed to remove old database file");
     println!("Database is extracted");
 
-    split_the_db();
-}
-
-fn split_the_db() {
-    println!("Splitting the database...");
-    fs::create_dir("database").is_err().then(|| {
-        fs::remove_dir_all("database").unwrap();
-        fs::create_dir("database").unwrap();
-    });
-
-    let file = File::open("database.txt").unwrap();
+    let file = File::open("database.txt").expect("Failed to open txt file");
     let reader = io::BufReader::new(file);
-    let local_lines = reader.lines().filter(|line| line.as_ref().unwrap().len() < 35).collect::<Vec<_>>();
 
-    for i in 0..100 {
-        let u = &local_lines[(i * (local_lines.len() / 100))..((i + 1) * (local_lines.len() / 100))];
-        let mut new_file = File::create(format!("database/{}.txt", u[0].as_deref().unwrap())).unwrap();
+    let uri = std::env::var("SCYLLA_URI")
+        .unwrap_or_else(|_| "127.0.0.1:9042".to_string());
 
-        for line in u.iter() {
-            new_file.write_all(format!("{}\n", line.as_ref().unwrap()).as_bytes()).unwrap();
-        }
+    let session: Session = SessionBuilder::new()
+        .known_node(uri)
+        .build()
+        .await
+        .expect("Failed to establish connection to the Database");
+
+    session
+        .query(
+            "CREATE KEYSPACE IF NOT EXISTS my_keyspace WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};",
+            &[],
+        )
+        .await
+        .expect("Failed to create Table");
+
+    session
+        .query(
+            "DROP TABLE IF EXISTS my_keyspace.bit;",
+            &[],
+        )
+        .await
+        .expect("Failed to create Table");
+
+
+    session
+        .query(
+            "CREATE TABLE IF NOT EXISTS my_keyspace.bit (uuid uuid PRIMARY KEY, address text)",
+            &[],
+        )
+        .await
+        .expect("Failed to create Table");
+
+    for line in reader.lines() {
+        session.query(
+            "INSERT INTO my_keyspace.bit (uuid, address) VALUES (?, ?);", 
+            (Uuid::new_v4(), line.unwrap())
+        )
+        .await
+        .expect("Failed to insert a value");
     }
+    println!("Data were inserted into the Database");
 }
 
-fn search_in_db(address: String, file_list: Vec<String>, file_nums: Vec<BigUint>) -> bool {
+async fn search_in_db(address: String, session: &Session) -> bool {
     let time = time::Instant::now();
     
-    let address_num = BigUint::from_bytes_be(&base58::decode(&address.as_str()).unwrap().as_slice());
+    let result = session.query(
+        "SELECT * FROM my_keyspace.bit WHERE address = ?;", 
+        (address,)
+    ).await
+    .expect("Error reading database");
     
-    for i in 1..file_nums.len() {
-        if file_nums[i - 1] < address_num && file_nums[i] > address_num {
-            let file = File::open(format!("database\\{}", file_list[i - 1])).unwrap();
-            let reader = io::BufReader::new(file);
-            for line in reader.lines() {
-                if line.as_ref().unwrap() == &address {
-                    println!("Time: {:?}", time.elapsed());
-                    return true;
-                }
-            }
-        }
+    if result.rows_num().unwrap() > 0 {
+        println!("Time: {:?}", time.elapsed());
+        return true;
     }
+
     println!("Time: {:?}", time.elapsed());
     false
 }
@@ -141,49 +163,4 @@ impl ToString for Wallet {
         //convert to json
         format!("{{\n\t\"private_key\": \"{}\",\n\t\"public_key\": \"{}\",\n\t\"address\": \"{}\"\n}}", self.private_key, self.public_key, self.address)
     }
-}
-
-async fn test() -> Result<(), Box<dyn Error>> {
-    // Create a new Session which connects to node at 127.0.0.1:9042
-    // (or SCYLLA_URI if specified)
-    let uri = std::env::var("SCYLLA_URI")
-        .unwrap_or_else(|_| "127.0.0.1:9042".to_string());
-
-    let session: Session = SessionBuilder::new()
-        .known_node(uri)
-        .build()
-        .await?;
-
-    // Create an example keyspace and table
-    session
-        .query(
-            "CREATE KEYSPACE IF NOT EXISTS ks WITH REPLICATION = \
-            {'class' : 'SimpleStrategy', 'replication_factor' : 1}",
-            &[],
-        )
-        .await?;
-
-    session
-        .query(
-            "CREATE TABLE IF NOT EXISTS ks.extab (a int primary key)",
-            &[],
-        )
-        .await?;
-
-    // Insert a value into the table
-    let to_insert: i32 = 12345;
-    session
-        .query("INSERT INTO ks.extab (a) VALUES(?)", (to_insert,))
-        .await?;
-
-    // Query rows from the table and print them
-    if let Some(rows) = session.query("SELECT a FROM ks.extab", &[]).await?.rows {
-        // Parse each row as a tuple containing single i32
-        for row in rows.into_typed::<(i32,)>() {
-            let read_row: (i32,) = row?;
-            println!("Read a value from row: {}", read_row.0);
-        }
-    }
-
-    Ok(())
 }
