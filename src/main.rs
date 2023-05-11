@@ -9,6 +9,8 @@ use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
 use scylla::*;
 
+//https://www.scylladb.com/
+
 
 #[tokio::main]
 async fn main() {
