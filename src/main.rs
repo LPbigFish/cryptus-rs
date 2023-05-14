@@ -1,4 +1,4 @@
-use std::{fs::{File, self}, io::{Write, self, BufRead}, time, collections::HashMap};
+use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap};
 
 use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
@@ -11,19 +11,46 @@ use humansize::{FileSize, file_size_opts};
 
 #[tokio::main]
 async fn main() {
-    let database = download_database().await;
 
-    loop {
+    let database;
+
+    if File::open("database.txt").is_err() {
+        database = download_database().await;
+    } else {
+        println!("Database is already downloaded");
+        let file = File::open("database.txt").expect("Failed to open txt file");
+        let reader = io::BufReader::new(file);
+
+        let mut map: HashMap<String, bool> = HashMap::new();
+        println!("Reading database...");
+        for line in reader.lines() {
+            map.entry(line.unwrap()).or_insert(true);
+        }
+        map.shrink_to_fit();
+        database = map;
+    }
+    println!("Database is read");
+
+    //.is_ok().then(|| {
+    //    let file = File::open("database.txt").expect("Failed to open txt file");
+    //    let reader = io::BufReader::new(file);
+    //    let mut map: HashMap<String, bool> = HashMap::new();
+    //    for line in reader.lines() {
+    //        map.entry(line.unwrap()).or_insert(true);
+    //    }
+    //    println!("Data were inserted into the Database");
+    //    map
+    //});
+
+    {
         let wallet = Wallet::new();
 
-        print!("{}", wallet.address);
         let result = search_in_db(&wallet.address, &database).await;
-        println!(" - {:?}", &result);
 
         if result {
-            let mut file = File::create("found.txt").expect("Failed to create found file");
-            file.write_all(wallet.to_string().as_bytes()).expect("Failed to write to found file");
-            break;
+            println!("Found a match: {}", wallet.address);
+            let mut file = File::create(format!("{}", &wallet.address)).unwrap();
+            file.write_all(wallet.to_string().as_bytes()).unwrap();
         }
     }
 }
