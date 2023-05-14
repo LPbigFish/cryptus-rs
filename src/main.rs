@@ -1,10 +1,8 @@
-use std::{fs::{File, self}, io::{Write, self, BufRead}, time, thread, collections::HashMap};
+use std::{fs::{File, self}, io::{Write, self, BufRead}, time, collections::HashMap};
 
-use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey, base58};
+use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
-use num::BigUint;
-use rayon::prelude::{ParallelBridge, ParallelIterator, IntoParallelIterator};
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
 
@@ -13,29 +11,29 @@ use humansize::{FileSize, file_size_opts};
 
 #[tokio::main]
 async fn main() {
-    //download_database().await;
+    let database = download_database().await;
 
-    let files = fs::read_dir("database").unwrap().map(|res| res.unwrap().path()).collect::<Vec<_>>();
-    let files = files.iter().map(|file| File::open(file).unwrap()).collect::<Vec<_>>();
-    let names = fs::read_dir("database").unwrap().map(|res| res.unwrap().file_name().into_string().unwrap()).collect::<Vec<_>>();
-    let num_of_lines = files.iter().map(|file| io::BufReader::new(file).lines().count()).collect::<Vec<_>>();
+    loop {
+        let wallet = Wallet::new();
 
-    let wallet = Wallet::new();
+        print!("{}", wallet.address);
+        let result = search_in_db(&wallet.address, &database).await;
+        println!(" - {:?}", &result);
 
-    println!("{}", wallet.to_string());
-
-    println!("{}", search_in_db(wallet.address, &files, names, num_of_lines).await);
+        if result {
+            let mut file = File::create("found.txt").expect("Failed to create found file");
+            file.write_all(wallet.to_string().as_bytes()).expect("Failed to write to found file");
+            break;
+        }
+    }
 }
 
-async fn download_database() {
+async fn download_database() -> HashMap<String, u8> {
     File::open("database.txt").is_ok().then(|| {
         fs::remove_file("database.txt").expect("Failed to remove old database file");
     });
     File::open("database.txt.gz").is_ok().then(|| {
         fs::remove_file("database.txt.gz").expect("Failed to remove old database file");
-    });
-    fs::remove_dir_all("database").is_err().then(|| {
-        fs::create_dir("database").unwrap();
     });
     println!("Downloading database...");
     let res = Client::new()
@@ -72,57 +70,32 @@ async fn download_database() {
 
     let file = File::open("database.txt").expect("Failed to open txt file");
     let reader = io::BufReader::new(file);
-    let lines = reader.lines().into_iter().collect::<Vec<_>>();
-    let lines = lines.into_par_iter().filter(|line| line.as_ref().unwrap().len() < 35).collect::<Vec<_>>();
 
-    let count = lines.len();
-    let address_per_file = count / 100;
+    let mut map: HashMap<String, u8> = HashMap::new();
 
-    println!("Inserting data into the Database...");
+    let mut i: u8 = 0;
 
-    fs::remove_dir_all("database").is_err().then(|| {
-        fs::create_dir("database").unwrap();
-    });
-
-    for i in 0..100 {
-        let name = lines[i * address_per_file].as_ref().unwrap();
-
-        let mut file = File::create(format!("database\\{}", name)).expect("Failed to create database file");
-
-        for line in lines[i * address_per_file..(i + 1) * address_per_file].iter() {
-            file.write_all(format!("{}\n", line.as_ref().unwrap()).as_bytes()).expect("Failed to write to database file");
+    for line in reader.lines() {
+        map.entry(line.unwrap()).or_insert(i);
+        i += 1;
+        if i % 255 == 0 {
+            i = 0;
         }
     }
 
     println!("Data were inserted into the Database");
+
+    map
 }
 
-async fn search_in_db(address: String, files: &Vec<File>, names: Vec<String>, num_of_lines: Vec<usize>) -> bool {
+async fn search_in_db(address: &String, map: &HashMap<String, u8>) -> bool {
     let time = time::Instant::now();
 
-    let address_num = BigUint::from_bytes_be(&base58::decode(address.as_str()).unwrap());
-    println!("Time: {:?}", time.elapsed());
-    for i in 0..(files.len() - 1) {
-        let file = &files[i];
-        let num_of_lines = num_of_lines[i];
-        let name = BigUint::from_bytes_be(&base58::decode(names[i].as_str()).unwrap());
-        let next_name = BigUint::from_bytes_be(&base58::decode(names[i+1].as_str()).unwrap());
-        if address_num >= name && address_num < next_name {
-            
+    let result = map.get(address).is_some().then(|| {
+        true
+    }).unwrap_or(false);
 
-            println!("Time: {:?}", time.elapsed());
-            if result.len() > 0 {
-                println!("Time: {:?}", time.elapsed());
-                return true;
-            } else {
-                println!("Time: {:?}", time.elapsed());
-                return false;
-            }
-        }
-    }
-
-    println!("Time: {:?}", time.elapsed());
-    false
+    return result;
 }
 
 #[derive(Debug, Clone)]
