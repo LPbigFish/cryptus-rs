@@ -28,7 +28,7 @@ async fn main() {
     }
 }
 
-async fn download_database() -> HashMap<String, u8> {
+async fn download_database() -> HashMap<String, bool> {
     File::open("database.txt").is_ok().then(|| {
         fs::remove_file("database.txt").expect("Failed to remove old database file");
     });
@@ -71,16 +71,10 @@ async fn download_database() -> HashMap<String, u8> {
     let file = File::open("database.txt").expect("Failed to open txt file");
     let reader = io::BufReader::new(file);
 
-    let mut map: HashMap<String, u8> = HashMap::new();
-
-    let mut i: u8 = 0;
+    let mut map: HashMap<String, bool> = HashMap::new();
 
     for line in reader.lines() {
-        map.entry(line.unwrap()).or_insert(i);
-        i += 1;
-        if i % 255 == 0 {
-            i = 0;
-        }
+        map.entry(line.unwrap()).or_insert(true);
     }
 
     println!("Data were inserted into the Database");
@@ -88,9 +82,7 @@ async fn download_database() -> HashMap<String, u8> {
     map
 }
 
-async fn search_in_db(address: &String, map: &HashMap<String, u8>) -> bool {
-    let time = time::Instant::now();
-
+async fn search_in_db(address: &String, map: &HashMap<String, bool>) -> bool {
     let result = map.get(address).is_some().then(|| {
         true
     }).unwrap_or(false);
