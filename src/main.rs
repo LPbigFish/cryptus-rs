@@ -1,10 +1,11 @@
-use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap};
+use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap, sync::{Arc, Mutex}};
 
 use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
+use tokio::task;
 
 //https://www.scylladb.com/
 
@@ -42,15 +43,44 @@ async fn main() {
     //    map
     //});
 
+    let mut handles = vec![];
+    let database = Arc::new(Mutex::new(database));
+
+    for i in 0..num_cpus::get_physical() {
+        let database = Arc::clone(&database);
+        let handle = task::spawn(finder(i, database));
+        handles.push(handle);
+    }
+
+    while let Some(handle) = handles.pop() {
+        handle.await.unwrap();
+    }
+}
+
+async fn finder(task_id: usize, database: Arc<Mutex<HashMap<String, bool>>>) {
     {
-        let wallet = Wallet::new();
+        let database = database.lock().unwrap();
+        let mut count = 0;
+        println!("thread started: {}", task_id);
+        loop {
+            let wallet = Wallet::new();
+                
+            let result = database.get(&wallet.address).is_some().then(|| {
+                true
+            }).unwrap_or(false);
 
-        let result = search_in_db(&wallet.address, &database).await;
-
-        if result {
-            println!("Found a match: {}", wallet.address);
-            let mut file = File::create(format!("{}", &wallet.address)).unwrap();
-            file.write_all(wallet.to_string().as_bytes()).unwrap();
+            if count % 1000 == 0 {
+                println!("{}: {:?}", wallet.address, result);
+                count = 0;
+            }
+            count += 1;
+    
+            if result {
+                println!("Found a match: {}", wallet.address);
+                let mut file = File::create(format!("{}", &wallet.address)).unwrap();
+                file.write_all(wallet.to_string().as_bytes()).unwrap();
+                break;
+            }
         }
     }
 }
@@ -107,14 +137,6 @@ async fn download_database() -> HashMap<String, bool> {
     println!("Data were inserted into the Database");
 
     map
-}
-
-async fn search_in_db(address: &String, map: &HashMap<String, bool>) -> bool {
-    let result = map.get(address).is_some().then(|| {
-        true
-    }).unwrap_or(false);
-
-    return result;
 }
 
 #[derive(Debug, Clone)]
