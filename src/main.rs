@@ -1,22 +1,21 @@
-use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap, sync::{Arc, Mutex}};
+use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap, sync::{Arc, Mutex}, thread};
 
 use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
-use tokio::task;
 
 //https://www.scylladb.com/
 
 
-#[tokio::main]
-async fn main() {
+fn main() {
 
     let database;
 
     if File::open("database.txt").is_err() {
-        database = download_database().await;
+        println!("Database is not downloaded");
+        database = tokio::runtime::Runtime::new().unwrap().block_on(download_database());
     } else {
         println!("Database is already downloaded");
         let file = File::open("database.txt").expect("Failed to open txt file");
@@ -43,25 +42,20 @@ async fn main() {
     //    map
     //});
 
-    let mut handles = vec![];
     let database = Arc::new(Mutex::new(database));
-
     for i in 0..num_cpus::get_physical() {
         let database = Arc::clone(&database);
-        let handle = task::spawn(finder(i, database));
-        handles.push(handle);
+        thread::spawn(move || {
+            finder(database, i);
+        });
     }
-
-    while let Some(handle) = handles.pop() {
-        handle.await.unwrap();
-    }
+    loop {}
 }
 
-async fn finder(task_id: usize, database: Arc<Mutex<HashMap<String, bool>>>) {
+fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize) -> Option<String> {
     {
         let database = database.lock().unwrap();
-        let mut count = 0;
-        println!("thread started: {}", task_id);
+        println!("thread started: {}", i);
         loop {
             let wallet = Wallet::new();
                 
@@ -69,17 +63,17 @@ async fn finder(task_id: usize, database: Arc<Mutex<HashMap<String, bool>>>) {
                 true
             }).unwrap_or(false);
 
-            if count % 1000 == 0 {
-                println!("{}: {:?}", wallet.address, result);
-                count = 0;
-            }
-            count += 1;
+           //if count % 10000 == 0 {
+           //    println!("{}: {:?}", wallet.address, result);
+           //    count = 0;
+           //}
+           //count += 1;
     
             if result {
                 println!("Found a match: {}", wallet.address);
                 let mut file = File::create(format!("{}", &wallet.address)).unwrap();
                 file.write_all(wallet.to_string().as_bytes()).unwrap();
-                break;
+                return Some(wallet.address);
             }
         }
     }
