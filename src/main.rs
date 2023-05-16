@@ -58,24 +58,27 @@ fn main() {
 
 fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize) -> Option<String> {
     {
+        let mut count: u32 = 0;
         println!("thread started: {}", i);
         loop {
+            let time = std::time::Instant::now();
             let wallet = Wallet::new();
                 
             let result = database.lock().unwrap().get(&wallet.address).is_some().then(|| {
                 true
             }).unwrap_or(false);
-           //if count % 10000 == 0 {
-           //    println!("{}: {:?}", wallet.address, result);
-           //    count = 0;
-           //}
-           //count += 1;
+           
     
             if result {
                 println!("Found a match: {}", wallet.address);
                 let mut file = File::create(format!("{}", &wallet.address)).unwrap();
                 file.write_all(wallet.to_string().as_bytes()).unwrap();
                 return Some(wallet.address);
+            }
+            
+            if count % 1000000 == 0 {
+                println!("{:?} tries per second", 1000000 as f64 / time.elapsed().as_secs_f64());
+                count = 0;
             }
         }
     }
