@@ -43,26 +43,28 @@ fn main() {
     //});
 
     let database = Arc::new(Mutex::new(database));
-    for i in 0..num_cpus::get_physical() {
+    let mut hnadles = Vec::new();
+    for i in 0..num_cpus::get() {
         let database = Arc::clone(&database);
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             finder(database, i);
         });
+        hnadles.push(handle);
     }
-    loop {}
+    for handle in hnadles {
+        handle.join().unwrap();
+    }
 }
 
 fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize) -> Option<String> {
     {
-        let database = database.lock().unwrap();
         println!("thread started: {}", i);
         loop {
             let wallet = Wallet::new();
                 
-            let result = database.get(&wallet.address).is_some().then(|| {
+            let result = database.lock().unwrap().get(&wallet.address).is_some().then(|| {
                 true
             }).unwrap_or(false);
-
            //if count % 10000 == 0 {
            //    println!("{}: {:?}", wallet.address, result);
            //    count = 0;
