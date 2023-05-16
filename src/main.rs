@@ -3,6 +3,7 @@ use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap, sy
 use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
+use num::BigUint;
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
 
@@ -43,11 +44,13 @@ fn main() {
     //});
 
     let database = Arc::new(Mutex::new(database));
+    let cycle = Arc::new(Mutex::new(BigUint::from(0u32)));
     let mut hnadles = Vec::new();
     for i in 0..num_cpus::get() {
         let database = Arc::clone(&database);
+        let mut cycle = Arc::clone(&cycle);
         let handle = thread::spawn(move || {
-            finder(database, i);
+            finder(database, i, &mut cycle);
         });
         hnadles.push(handle);
     }
@@ -56,29 +59,31 @@ fn main() {
     }
 }
 
-fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize) -> Option<String> {
+fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize, cycle: &mut Arc<Mutex<BigUint>>) -> Option<String> {
     {
-        let mut count: u32 = 0;
         println!("thread started: {}", i);
+        let mut count: u32 = 0;
+        let time = std::time::Instant::now();
+        let mut prev_time = time.elapsed();
         loop {
-            let time = std::time::Instant::now();
             let wallet = Wallet::new();
-                
             let result = database.lock().unwrap().get(&wallet.address).is_some().then(|| {
                 true
             }).unwrap_or(false);
-           
-    
             if result {
-                println!("Found a match: {}", wallet.address);
+                println!("Found a match: \n {}", wallet.to_string());
                 let mut file = File::create(format!("{}", &wallet.address)).unwrap();
                 file.write_all(wallet.to_string().as_bytes()).unwrap();
                 return Some(wallet.address);
             }
             
-            if count % 1000000 == 0 {
-                println!("{:?} tries per second", 1000000 as f64 / time.elapsed().as_secs_f64());
+            *cycle.lock().unwrap() += BigUint::from(1u8);
+
+            count += 1;
+            if count == 100000 {
+                println!("cycle: {} | time: {:?}", cycle.lock().unwrap(), time.elapsed() - prev_time);
                 count = 0;
+                prev_time = time.elapsed();
             }
         }
     }
