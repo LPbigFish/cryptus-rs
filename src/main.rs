@@ -1,22 +1,22 @@
-use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap, sync::{Arc, Mutex}};
+use std::{fs::{File, self}, io::{Write, self, BufRead}, collections::HashMap, sync::{Arc, Mutex}, thread};
 
 use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
+use num::BigUint;
 use reqwest::{self, Client};
 use humansize::{FileSize, file_size_opts};
-use tokio::task;
 
 //https://www.scylladb.com/
 
 
-#[tokio::main]
-async fn main() {
+fn main() {
 
     let database;
 
     if File::open("database.txt").is_err() {
-        database = download_database().await;
+        println!("Database is not downloaded");
+        database = tokio::runtime::Runtime::new().unwrap().block_on(download_database());
     } else {
         println!("Database is already downloaded");
         let file = File::open("database.txt").expect("Failed to open txt file");
@@ -43,43 +43,47 @@ async fn main() {
     //    map
     //});
 
-    let mut handles = vec![];
     let database = Arc::new(Mutex::new(database));
-
-    for i in 0..num_cpus::get_physical() {
+    let cycle = Arc::new(Mutex::new(BigUint::from(0u32)));
+    let mut hnadles = Vec::new();
+    for i in 0..num_cpus::get() {
         let database = Arc::clone(&database);
-        let handle = task::spawn(finder(i, database));
-        handles.push(handle);
+        let mut cycle = Arc::clone(&cycle);
+        let handle = thread::spawn(move || {
+            finder(database, i, &mut cycle);
+        });
+        hnadles.push(handle);
     }
-
-    while let Some(handle) = handles.pop() {
-        handle.await.unwrap();
+    for handle in hnadles {
+        handle.join().unwrap();
     }
 }
 
-async fn finder(task_id: usize, database: Arc<Mutex<HashMap<String, bool>>>) {
+fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize, cycle: &mut Arc<Mutex<BigUint>>) -> Option<String> {
     {
-        let database = database.lock().unwrap();
-        let mut count = 0;
-        println!("thread started: {}", task_id);
+        println!("thread started: {}", i);
+        let mut count: u32 = 0;
+        let time = std::time::Instant::now();
+        let mut prev_time = time.elapsed();
         loop {
             let wallet = Wallet::new();
-                
-            let result = database.get(&wallet.address).is_some().then(|| {
+            let result = database.lock().unwrap().get(&wallet.address).is_some().then(|| {
                 true
             }).unwrap_or(false);
-
-            if count % 1000 == 0 {
-                println!("{}: {:?}", wallet.address, result);
-                count = 0;
-            }
-            count += 1;
-    
             if result {
-                println!("Found a match: {}", wallet.address);
+                println!("Found a match: \n {}", wallet.to_string());
                 let mut file = File::create(format!("{}", &wallet.address)).unwrap();
                 file.write_all(wallet.to_string().as_bytes()).unwrap();
-                break;
+                return Some(wallet.address);
+            }
+            
+            *cycle.lock().unwrap() += BigUint::from(1u8);
+
+            count += 1;
+            if count == 100000 {
+                println!("cycle: {} | time: {:?}", cycle.lock().unwrap(), time.elapsed() - prev_time);
+                count = 0;
+                prev_time = time.elapsed();
             }
         }
     }
