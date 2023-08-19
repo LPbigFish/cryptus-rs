@@ -1,59 +1,13 @@
-pub mod bitcoin_part;
+use std::{sync::{Arc, Mutex}, collections::HashMap, fs::{File, self}, io::{Write, self}, str::FromStr};
 
-use std::{fs::{File, self}, io::{Write, self}, collections::HashMap, sync::{Arc, Mutex}, thread, str::FromStr, u128};
-
-use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
-use flate2::read::GzDecoder;
+use bitcoin::{Address, Network, secp256k1::{Secp256k1, rand}, PublicKey, PrivateKey};
+use flate2::write::GzDecoder;
 use futures_util::StreamExt;
-use k256::SecretKey;
+use humansize::{file_size_opts, FileSize};
 use memmap::Mmap;
 use num::BigUint;
 use rayon::prelude::*;
-use reqwest::{self, Client};
-use humansize::{FileSize, file_size_opts};
-
-fn main() {
-/*
-    let database;
-
-    if File::open("database.txt").is_err() {
-        println!("Database is not downloaded");
-        database = tokio::runtime::Runtime::new().unwrap().block_on(download_database());
-    } else {
-        println!("Database is already downloaded");
-        let file = File::open("database.txt").expect("Failed to open txt file");
-        let reader = io::BufReader::new(file);
-
-        let mut map: HashMap<String, bool> = HashMap::new();
-        println!("Reading database...");
-        for line in reader.lines() {
-            map.entry(line.unwrap()).or_insert(true);
-        }
-        map.shrink_to_fit();
-        database = map;
-    }
-    println!("Database is read");
-
-    let database = Arc::new(Mutex::new(database));
-    let cycle = Arc::new(Mutex::new(BigUint::from(0u8)));
-    let mut hnadles = Vec::new();
-    for i in 0..num_cpus::get() {
-        let database = Arc::clone(&database);
-        let mut cycle = Arc::clone(&cycle);
-        let handle = thread::spawn(move || {
-            finder(database, i, &mut cycle);
-        });
-        hnadles.push(handle);
-    }
-    for handle in hnadles {
-        handle.join().unwrap();
-    }
-
-    */
-    let time = std::time::Instant::now();
-    prepair_with_balance();
-    println!("time: {:?}", time.elapsed());
-}
+use reqwest::Client;
 
 fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize, cycle: &mut Arc<Mutex<BigUint>>) -> Option<String> {
     {
@@ -84,35 +38,6 @@ fn finder(database: Arc<Mutex<HashMap<String, bool>>>, i: usize, cycle: &mut Arc
         }
     }
 }
-
-fn sort_gpt() {
-    let file = File::open("database.txt").expect("Failed to open txt file");
-    let mapping = unsafe { Mmap::map(&file).expect("Failed to map file") };
-
-    let lines: Vec<&str> = mapping.split(|&byte| byte == b'\n').into_iter().par_bridge().map(|line| std::str::from_utf8(line).unwrap()).collect();
-
-    let map: Arc<Mutex<HashMap<String, Vec<&str>>>> = Arc::new(Mutex::new(HashMap::new()));
-
-    lines.par_iter().enumerate().for_each(|(index, line)| {
-        Address::from_str(line).is_ok().then(|| {
-            let address = Address::from_str(line).unwrap().require_network(Network::Bitcoin).unwrap();
-            address.address_type().is_some().then( || {
-                let address_type = address.address_type().unwrap().to_string();
-                map.lock().unwrap().entry(address_type).or_insert(Vec::new()).push(line);
-            });
-        }).unwrap_or(());
-        if index % 100000 == 0 {
-            println!("{} / {}", index, lines.len());
-        }
-    });
-
-    for (key, value) in map.lock().unwrap().iter() {
-        let mut file = File::create(format!("{}.txt", key)).expect("Failed to create txt file");
-        for address in value {
-            file.write_all(format!("{}\n", address).as_bytes()).expect("Failed to write to txt file");
-        }
-    }
-} 
 
 fn prepair_with_balance() {
     let file = File::open("database.tsv").expect("Failed to open txt file");
@@ -161,7 +86,7 @@ async fn download_database() {
         .send()
         .await
         .expect("Failed to download database, Network error");
-    println!("Downloaded database. Size: {:?} Bytes", res.content_length().unwrap().file_size(file_size_opts::BINARY).unwrap());
+    println!("Downloaded database. Size: {} Bytes", res.content_length().unwrap().file_size(file_size_opts::BINARY).unwrap());
     
     File::open("database.txt.gz").is_ok().then(|| {
         fs::remove_file("database.txt.gz").expect("Failed to remove old database file");
@@ -190,6 +115,35 @@ async fn download_database() {
 
     sort_gpt();
 }
+
+fn sort_gpt() {
+    let file = File::open("database.txt").expect("Failed to open txt file");
+    let mapping = unsafe { Mmap::map(&file).expect("Failed to map file") };
+
+    let lines: Vec<&str> = mapping.split(|&byte| byte == b'\n').into_iter().par_bridge().map(|line| std::str::from_utf8(line).unwrap()).collect();
+
+    let map: Arc<Mutex<HashMap<String, Vec<&str>>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    lines.par_iter().enumerate().for_each(|(index, line)| {
+        Address::from_str(line).is_ok().then(|| {
+            let address = Address::from_str(line).unwrap().require_network(Network::Bitcoin).unwrap();
+            address.address_type().is_some().then( || {
+                let address_type = address.address_type().unwrap().to_string();
+                map.lock().unwrap().entry(address_type).or_insert(Vec::new()).push(line);
+            });
+        }).unwrap_or(());
+        if index % 100000 == 0 {
+            println!("{} / {}", index, lines.len());
+        }
+    });
+
+    for (key, value) in map.lock().unwrap().iter() {
+        let mut file = File::create(format!("{}.txt", key)).expect("Failed to create txt file");
+        for address in value {
+            file.write_all(format!("{}\n", address).as_bytes()).expect("Failed to write to txt file");
+        }
+    }
+} 
 
 async fn download_database_with_balance() {
     File::open("database.txt").is_ok().then(|| {
