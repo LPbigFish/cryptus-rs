@@ -3,6 +3,7 @@ use std::{fs::{File, self}, io::{Write, self}, collections::HashMap, sync::{Arc,
 use bitcoin::{secp256k1::{Secp256k1, rand}, Address, Network, PublicKey, PrivateKey};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
+use k256::SecretKey;
 use memmap::Mmap;
 use num::BigUint;
 use rayon::prelude::*;
@@ -112,6 +113,10 @@ fn sort_gpt() {
             file.write_all(format!("{}\n", address).as_bytes()).expect("Failed to write to txt file");
         }
     }
+}
+
+fn generate_eth() -> String {
+    
 }
 
 fn prepair_with_balance() {
